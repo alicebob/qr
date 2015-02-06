@@ -1,20 +1,21 @@
 package qr
 
-// Queue with disk based overflow. Order is not strictly preserved.
+// Queue with disk based overflow. Element order is not strictly preserved.
 //
 // When everything is fine elements flow over Qr.q. This is a simple channel
 // directly connecting the producer(s) and the consumer(s).
-// If that channel is full elements are written to the Qr.file channel. The loop() will
-// write all elements from Qr.file to disk. That file is closed after `timeout`
-// (no matter how many elements ended up in the file). At the same time loop
-// will try to handle old files: if there is at least a single completed file,
-// loop() will open that file and try to write the elements to Qr.q.
+// If that channel is full elements are written to the Qr.planb channel. The
+// loop() will write all elements from Qr.planb to disk. That file is closed
+// after `timeout` (no matter how many elements ended up in the file). At the
+// same time loop will try to handle old files: if there is at least a single
+// completed file, loop() will open that file and try to write the elements to
+// Qr.q.
 //
-//   ---> Enqueue()   --- .q --->   Dequeue() --->
-//             \                       ^
-//            .file                   /
-//               \--> disk []files --/
-//                     (loop())
+//   ---> Enqueue()     -------   .q   ------->     Dequeue() --->
+//             \                                        ^
+//            .planb                                  .q
+//               \--> swapout() -> disk -> swapin() --/
+//
 
 import (
 	"encoding/gob"
@@ -31,7 +32,7 @@ const (
 
 type Qr struct {
 	q      chan interface{} // the main channel.
-	file   chan interface{} // to disk, used when q is full.
+	planb  chan interface{} // to disk, used when q is full.
 	base   string
 	prefix string
 }
@@ -39,12 +40,14 @@ type Qr struct {
 func New() *Qr {
 	qr := Qr{
 		q:      make(chan interface{}, 40), // TODO: size config
-		file:   make(chan interface{}),
+		planb:  make(chan interface{}),
 		base:   "./",
 		prefix: "testqr",
 	}
 	// TODO: look at the FS for existing Q files
-	go qr.loop()
+	files := make(chan string)
+	go qr.swapin(files)
+	go qr.swapout(files)
 	return &qr
 }
 
@@ -57,7 +60,7 @@ func (qr *Qr) Enqueue(e interface{}) {
 	default:
 	}
 	// fmt.Printf("full q\n")
-	qr.file <- e
+	qr.planb <- e
 }
 
 // Dequeue is the channel where elements come from. It'll be closed when we
@@ -67,28 +70,59 @@ func (qr *Qr) Dequeue() <-chan interface{} {
 }
 
 func (qr *Qr) Quit() {
-	// close(qr.files)
-	// todo: wait for loop
+	// close(qr.file)
+	// todo: wait for swapout
 	// close(qr.q)
 	// todo: empty q to a file
-	// todo: be sure the value in `next` is kept
 }
 
-func (qr *Qr) loop() {
-	defer fmt.Printf("loop done\n")
+func (qr *Qr) swapout(files chan string) {
 	var (
-		wfh       io.WriteCloser
-		enc       *gob.Encoder
-		files     []string
-		writefile string
-		readfile  string
-		q         chan interface{}
-		rfh       io.ReadCloser
-		dec       *gob.Decoder
-		next      interface{}
-		t         = time.NewTimer(100 * time.Minute)
+		enc      *gob.Encoder
+		filename string
+		fh       io.WriteCloser
+		t        = time.NewTimer(100 * time.Minute)
 	)
+	var err error
+	for {
+		select {
+		case e := <-qr.planb:
+			if enc == nil {
+				// open file
+				filename = qr.batchFilename(time.Now().UnixNano())
+				fmt.Printf("new file %s...\n", filename)
+				fh, err = os.Create(filename)
+				if err != nil {
+					fmt.Printf("create err: %v\n", err)
+					panic("todo")
+					return // TODO
+				}
+				enc = gob.NewEncoder(fh)
+				t.Reset(timeout)
+			}
+			if err = enc.Encode(&e); err != nil {
+				fmt.Printf("Encode error: %v\n", err)
+			}
+		case <-t.C:
+			// time to close our file.
+			fmt.Printf("closing file %s...\n", filename)
+			fh.Close()
+			fh = nil
+			enc = nil
+			files <- filename
+		}
+	}
+}
 
+func (qr *Qr) swapin(newFiles chan string) {
+	var (
+		files    []string
+		fh       io.ReadCloser
+		filename string
+		q        chan interface{}
+		dec      *gob.Decoder
+		next     interface{}
+	)
 	var setupNext func()
 	setupNext = func() {
 		var err error
@@ -102,21 +136,21 @@ func (qr *Qr) loop() {
 				q = nil
 				return
 			}
-			readfile, files = files[0], files[1:]
-			rfh, err = os.Open(readfile)
-			fmt.Printf("open %s: %v\n", readfile, err)
+			filename, files = files[0], files[1:]
+			fh, err = os.Open(filename)
+			fmt.Printf("open %s: %v\n", filename, err)
 			if err != nil {
 				fmt.Printf("open err: %v\n", err)
 				goto again
 			}
-			dec = gob.NewDecoder(rfh)
+			dec = gob.NewDecoder(fh)
 		}
 		err = dec.Decode(&next)
 		if err != nil {
 			if err == io.EOF {
-				fmt.Printf("done reading %s\n", readfile)
-				rfh.Close()
-				os.Remove(readfile)
+				fmt.Printf("done reading %s\n", filename)
+				fh.Close()
+				os.Remove(filename)
 				q = nil
 				dec = nil
 				setupNext()
@@ -127,38 +161,13 @@ func (qr *Qr) loop() {
 		}
 		q = qr.q
 	}
-
-	var err error
 	for {
 		select {
-		case e := <-qr.file:
-			if enc == nil {
-				// open file
-				writefile = qr.batchFilename(time.Now().UnixNano())
-				fmt.Printf("new file %s...\n", writefile)
-				wfh, err = os.Create(writefile)
-				if err != nil {
-					fmt.Printf("create err: %v\n", err)
-					panic("todo")
-					return // TODO
-				}
-				enc = gob.NewEncoder(wfh)
-				t.Reset(timeout)
-			}
-			if err = enc.Encode(&e); err != nil {
-				fmt.Printf("Encode error: %v\n", err)
-			}
-		case <-t.C:
-			// time to close our file.
-			fmt.Printf("closing file %s...\n", writefile)
-			wfh.Close()
-			wfh = nil
-			dec = nil
-			files = append(files, writefile)
-			if q == nil {
-				setupNext()
-			}
+		case f := <-newFiles:
+			files = append(files, f)
+			setupNext()
 		case q <- next:
+			// case is disabled if there is nothing to send
 			// fmt.Printf("wrote from disk to main q\n")
 			setupNext()
 		}
