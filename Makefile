@@ -1,9 +1,15 @@
-.PHONY: all test install
+.PHONY: short test install bench
 
-all: test
+short:
+	go test -short
+	go vet .
+	golint .
 
 test:
 	go test
 
-install:
+install: test
 	go install
+
+bench:
+	go test -short -bench .

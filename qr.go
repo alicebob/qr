@@ -22,29 +22,33 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 )
 
 const (
-	fileExtension = ".q"
+	fileExtension = ".qr"
 	timeout       = time.Second // TODO: configurable.
+	mainbuffer    = 1000        // TODO: configurable
 )
 
 type Qr struct {
 	q      chan interface{} // the main channel.
 	planb  chan interface{} // to disk, used when q is full.
-	base   string
+	dir    string
 	prefix string
 }
 
-func New() *Qr {
+// New starts a Queue which stores files in <dir>/<prefix>-.<timestamp>.qr
+func New(dir, prefix string) *Qr {
 	qr := Qr{
-		q:      make(chan interface{}, 40), // TODO: size config
+		q:      make(chan interface{}, mainbuffer),
 		planb:  make(chan interface{}),
-		base:   "./",
-		prefix: "testqr",
+		dir:    dir,
+		prefix: prefix,
 	}
-	// TODO: look at the FS for existing Q files
 	var (
 		filesToDisk   = make(chan string)
 		filesFromDisk = make(chan string)
@@ -52,6 +56,9 @@ func New() *Qr {
 	go qr.swapout(filesToDisk)
 	go qr.fs(filesToDisk, filesFromDisk)
 	go qr.swapin(filesFromDisk)
+	for _, f := range qr.findOld() {
+		filesFromDisk <- f
+	}
 	return &qr
 }
 
@@ -73,10 +80,10 @@ func (qr *Qr) Dequeue() <-chan interface{} {
 	return qr.q
 }
 
-// Quit shuts down all Go routines and closes the Dequeue() channel. It'll
-// write all in-flight entries to disk. Calling Enqueue() after Quit will
+// Close shuts down all Go routines and closes the Dequeue() channel. It'll
+// write all in-flight entries to disk. Calling Enqueue() after Close will
 // panic.
-func (qr *Qr) Quit() {
+func (qr *Qr) Close() {
 	// Closing planb triggers a cascade closing of all go-s and channels.
 	close(qr.planb)
 
@@ -88,16 +95,24 @@ func (qr *Qr) Quit() {
 		fmt.Printf("create err: %v\n", err)
 		return
 	}
-	defer fh.Close()
 	enc := gob.NewEncoder(fh)
+	count := 0
 	for e := range qr.q {
+		count++
 		if err = enc.Encode(&e); err != nil {
 			fmt.Printf("Encode error: %v\n", err)
 		}
 	}
+	fh.Close()
+
+	if count == 0 {
+		// all this work, and there was nothing to queue...
+		os.Remove(filename)
+	}
 }
 
 func (qr *Qr) swapout(files chan string) {
+	defer fmt.Printf("swapout out\n")
 	var (
 		enc      *gob.Encoder
 		filename string
@@ -121,7 +136,7 @@ func (qr *Qr) swapout(files chan string) {
 			if enc == nil {
 				// open file
 				filename = qr.batchFilename(time.Now().UnixNano())
-				fmt.Printf("new file %s...\n", filename)
+				fmt.Printf("swapout %s\n", filename)
 				fh, err = os.Create(filename)
 				if err != nil {
 					fmt.Printf("create err: %v\n", err)
@@ -136,7 +151,7 @@ func (qr *Qr) swapout(files chan string) {
 			}
 		case <-t.C:
 			// time to close our file.
-			fmt.Printf("closing file %s...\n", filename)
+			// fmt.Printf("closing file %s...\n", filename)
 			fh.Close()
 			enc = nil
 			files <- filename
@@ -145,10 +160,11 @@ func (qr *Qr) swapout(files chan string) {
 }
 
 func (qr *Qr) swapin(files chan string) {
+	defer fmt.Printf("swapin out\n")
 	defer close(qr.q)
 	for filename := range files {
 		fh, err := os.Open(filename)
-		fmt.Printf("open %s: %v\n", filename, err)
+		fmt.Printf("swapin %s\n", filename)
 		if err != nil {
 			fmt.Printf("open err: %v\n", err)
 			continue
@@ -161,17 +177,22 @@ func (qr *Qr) swapin(files chan string) {
 				if err != io.EOF {
 					fmt.Printf("decode err: %v\n", err)
 					// TODO
-					break
 				}
+				fh.Close()
+				fh = nil
+				break
 			}
+			// fmt.Printf("swapin write: %v\n", next)
 			qr.q <- next
 		}
+		fmt.Printf("swapin done with %s\n", filename)
 	}
 }
 
 // fs keeps a list of all files on disk. swapout() will add filenames, and
 // swapin asks it for filenames. It returns when in is closed.
 func (qr *Qr) fs(in, out chan string) {
+	defer fmt.Printf("fs out\n")
 	defer close(out)
 	var (
 		filenames []string
@@ -184,16 +205,45 @@ func (qr *Qr) fs(in, out chan string) {
 			if !ok {
 				return
 			}
-			filenames = append(filenames, f)
-			checkOut = out
-			next = filenames[0]
+			if checkOut == nil {
+				checkOut = out
+				next = f
+			} else {
+				filenames = append(filenames, f)
+			}
 		case checkOut <- next:
-			// case disabled if there is no file
-			filenames = filenames[1:]
+			if len(filenames) > 0 {
+				next, filenames = filenames[0], filenames[1:]
+			} else {
+				// case disabled since there is no file
+				checkOut = nil
+			}
 		}
 	}
 }
 
 func (qr *Qr) batchFilename(id int64) string {
-	return fmt.Sprintf("%s/%s-%020d%s", qr.base, qr.prefix, id, fileExtension)
+	return fmt.Sprintf("%s/%s-%020d%s", qr.dir, qr.prefix, id, fileExtension)
+}
+
+// findOld finds .qr files from a previous run.
+func (qr *Qr) findOld() []string {
+	f, err := os.Open(qr.dir)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var existing []string
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		return nil
+	}
+	for _, name := range names {
+		if !strings.HasPrefix(name, qr.prefix+"-") || !strings.HasSuffix(name, fileExtension) {
+			continue
+		}
+		existing = append(existing, filepath.Join(qr.dir, name))
+	}
+	sort.Strings(existing)
+	return existing
 }
