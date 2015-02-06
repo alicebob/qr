@@ -11,10 +11,10 @@ package qr
 // completed file, loop() will open that file and try to write the elements to
 // Qr.q.
 //
-//   ---> Enqueue()     -------   .q   ------->     Dequeue() --->
-//             \                                        ^
-//            .planb                                  .q
-//               \--> swapout() -> disk -> swapin() --/
+//   ---> Enqueue()    ---------   .q  --------->     Dequeue() --->
+//             \                                           ^
+//            .planb                                     .q
+//               \--> swapout() --> fs() --> swapin() --/
 //
 
 import (
@@ -45,9 +45,13 @@ func New() *Qr {
 		prefix: "testqr",
 	}
 	// TODO: look at the FS for existing Q files
-	files := make(chan string)
-	go qr.swapin(files)
-	go qr.swapout(files)
+	var (
+		filesToDisk   = make(chan string)
+		filesFromDisk = make(chan string)
+	)
+	go qr.swapout(filesToDisk)
+	go qr.fs(filesToDisk, filesFromDisk)
+	go qr.swapin(filesFromDisk)
 	return &qr
 }
 
@@ -69,11 +73,28 @@ func (qr *Qr) Dequeue() <-chan interface{} {
 	return qr.q
 }
 
+// Quit shuts down all Go routines and closes the Dequeue() channel. It'll
+// write all in-flight entries to disk. Calling Enqueue() after Quit will
+// panic.
 func (qr *Qr) Quit() {
-	// close(qr.file)
-	// todo: wait for swapout
-	// close(qr.q)
-	// todo: empty q to a file
+	// Closing planb triggers a cascade closing of all go-s and channels.
+	close(qr.planb)
+
+	// Store the in-flight ones for next time.
+	// TODO: could be there is nothing.
+	filename := qr.batchFilename(0) // special filename
+	fh, err := os.Create(filename)
+	if err != nil {
+		fmt.Printf("create err: %v\n", err)
+		return
+	}
+	defer fh.Close()
+	enc := gob.NewEncoder(fh)
+	for e := range qr.q {
+		if err = enc.Encode(&e); err != nil {
+			fmt.Printf("Encode error: %v\n", err)
+		}
+	}
 }
 
 func (qr *Qr) swapout(files chan string) {
@@ -83,10 +104,20 @@ func (qr *Qr) swapout(files chan string) {
 		fh       io.WriteCloser
 		t        = time.NewTimer(100 * time.Minute)
 	)
+	defer func() {
+		if enc != nil {
+			fh.Close()
+			files <- filename
+		}
+		close(files)
+	}()
 	var err error
 	for {
 		select {
-		case e := <-qr.planb:
+		case e, ok := <-qr.planb:
+			if !ok {
+				return
+			}
 			if enc == nil {
 				// open file
 				filename = qr.batchFilename(time.Now().UnixNano())
@@ -107,69 +138,58 @@ func (qr *Qr) swapout(files chan string) {
 			// time to close our file.
 			fmt.Printf("closing file %s...\n", filename)
 			fh.Close()
-			fh = nil
 			enc = nil
 			files <- filename
 		}
 	}
 }
 
-func (qr *Qr) swapin(newFiles chan string) {
-	var (
-		files    []string
-		fh       io.ReadCloser
-		filename string
-		q        chan interface{}
-		dec      *gob.Decoder
-		next     interface{}
-	)
-	var setupNext func()
-	setupNext = func() {
-		var err error
-		// fmt.Printf("in setupNext\n")
-		if dec == nil {
-		again:
-			// no decoder openend.
-			if len(files) == 0 {
-				// Nothing to do. Just wait.
-				fmt.Printf("nothing to do\n")
-				q = nil
-				return
-			}
-			filename, files = files[0], files[1:]
-			fh, err = os.Open(filename)
-			fmt.Printf("open %s: %v\n", filename, err)
-			if err != nil {
-				fmt.Printf("open err: %v\n", err)
-				goto again
-			}
-			dec = gob.NewDecoder(fh)
-		}
-		err = dec.Decode(&next)
+func (qr *Qr) swapin(files chan string) {
+	defer close(qr.q)
+	for filename := range files {
+		fh, err := os.Open(filename)
+		fmt.Printf("open %s: %v\n", filename, err)
 		if err != nil {
-			if err == io.EOF {
-				fmt.Printf("done reading %s\n", filename)
-				fh.Close()
-				os.Remove(filename)
-				q = nil
-				dec = nil
-				setupNext()
-			} else {
-				fmt.Printf("decode err: %v\n", err)
-				// TODO
-			}
+			fmt.Printf("open err: %v\n", err)
+			continue
 		}
-		q = qr.q
+		os.Remove(filename)
+		dec := gob.NewDecoder(fh)
+		for {
+			var next interface{}
+			if err = dec.Decode(&next); err != nil {
+				if err != io.EOF {
+					fmt.Printf("decode err: %v\n", err)
+					// TODO
+					break
+				}
+			}
+			qr.q <- next
+		}
 	}
+}
+
+// fs keeps a list of all files on disk. swapout() will add filenames, and
+// swapin asks it for filenames. It returns when in is closed.
+func (qr *Qr) fs(in, out chan string) {
+	defer close(out)
+	var (
+		filenames []string
+		checkOut  chan string
+		next      string
+	)
 	for {
 		select {
-		case f := <-newFiles:
-			files = append(files, f)
-			setupNext()
-		case q <- next:
-			// case is disabled if there is nothing to send
-			// fmt.Printf("wrote from disk to main q\n")
-			setupNext()
+		case f, ok := <-in:
+			if !ok {
+				return
+			}
+			filenames = append(filenames, f)
+			checkOut = out
+			next = filenames[0]
+		case checkOut <- next:
+			// case disabled if there is no file
+			filenames = filenames[1:]
 		}
 	}
 }
