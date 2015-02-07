@@ -38,7 +38,6 @@ func TestBasic(t *testing.T) {
 	for i := range ret {
 		select {
 		case ii := <-q.Dequeue():
-			t.Logf("Got a : %#v", ii)
 			ret[i] = ii.(int)
 		case <-time.After(2 * time.Second):
 			t.Fatalf("q should not be empty")
@@ -85,7 +84,7 @@ func TestBig(t *testing.T) {
 
 	d := setupDataDir()
 
-	q := qr.New(d, "events")
+	q := qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
 
 	eventCount := 10000
 	for i := 0; i < eventCount; i++ {
@@ -112,7 +111,7 @@ func TestAsync(t *testing.T) {
 
 	// Random sleep readers and writers.
 	d := setupDataDir()
-	q := qr.New(d, "events")
+	q := qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
 	var (
 		eventCount = 10000
 		payload    = strings.Repeat("0xDEADBEEF", 300)
@@ -159,7 +158,7 @@ func TestMany(t *testing.T) {
 		d          = setupDataDir()
 	)
 
-	q := qr.New(d, "events")
+	q := qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
 	wg := sync.WaitGroup{}
 
 	for i := 0; i < clients; i++ {

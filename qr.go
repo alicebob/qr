@@ -1,21 +1,33 @@
 package qr
 
-// Queue with disk based overflow. Element order is not strictly preserved.
+// In process queue with disk based overflow. Element order is not strictly
+// preserved.
 //
 // When everything is fine elements flow over Qr.q. This is a simple channel
 // directly connecting the producer(s) and the consumer(s).
-// If that channel is full elements are written to the Qr.planb channel. The
-// loop() will write all elements from Qr.planb to disk. That file is closed
-// after `timeout` (no matter how many elements ended up in the file). At the
-// same time loop will try to handle old files: if there is at least a single
-// completed file, loop() will open that file and try to write the elements to
-// Qr.q.
+// If that channel is full elements are written to the Qr.planb channel.
+// swapout() will write all elements from Qr.planb to disk. That file is closed
+// after `timeout`. At the same time swapin() will try to process old files: if
+// there is at least a single completed file, swapin() will open that file and
+// try to write the elements to Qr.q.
 //
 //   ---> Enqueue()    ---------   .q  --------->     Dequeue() --->
 //             \                                           ^
 //            .planb                                     .q
 //               \--> swapout() --> fs() --> swapin() --/
 //
+//
+// Usage:
+// q := New("/mnt/queues/", "demo", OptionBuffer(100))
+// defer q.Close()
+// go func() {
+//     for e := range q.Dequeue() {
+//        fmt.Printf("We got: %v\n", e)
+//     }
+// }
+// // elsewhere:
+// q.Enqueue("aap")
+// q.Enqueue("noot")
 
 import (
 	"encoding/gob"
@@ -29,26 +41,56 @@ import (
 )
 
 const (
+	// DefaultTimeout can be changed with OptionTimeout.
+	DefaultTimeout = 10 * time.Second
+	// DefaultBuffer can be changed with OptionBuffer.
+	DefaultBuffer = 1000
+
 	fileExtension = ".qr"
-	timeout       = time.Second // TODO: configurable.
-	mainbuffer    = 1000        // TODO: configurable
 )
 
 type Qr struct {
-	q      chan interface{} // the main channel.
-	planb  chan interface{} // to disk, used when q is full.
-	dir    string
-	prefix string
+	q          chan interface{} // the main channel.
+	planb      chan interface{} // to disk, used when q is full.
+	dir        string
+	prefix     string
+	timeout    time.Duration
+	bufferSize int
+}
+
+// Option is an option to New(), which can change some settings.
+type Option func(qr *Qr)
+
+// OptionTimeout is an option for New(). It specifies the time after which a queue
+// file is closed. Smaller means more files.
+func OptionTimeout(t time.Duration) Option {
+	return func(qr *Qr) {
+		qr.timeout = t
+	}
+}
+
+// OptionBuffer is an option for New(). It specifies the in-memory size of the
+// queue. Smaller means the disk will be used sooner, larger means more memory.
+func OptionBuffer(n int) Option {
+	return func(qr *Qr) {
+		qr.bufferSize = n
+	}
 }
 
 // New starts a Queue which stores files in <dir>/<prefix>-.<timestamp>.qr
-func New(dir, prefix string) *Qr {
+func New(dir, prefix string, options ...Option) *Qr {
 	qr := Qr{
-		q:      make(chan interface{}, mainbuffer),
-		planb:  make(chan interface{}),
-		dir:    dir,
-		prefix: prefix,
+		planb:      make(chan interface{}),
+		dir:        dir,
+		prefix:     prefix,
+		timeout:    DefaultTimeout,
+		bufferSize: DefaultBuffer,
 	}
+	for _, cb := range options {
+		cb(&qr)
+	}
+	qr.q = make(chan interface{}, qr.bufferSize)
+
 	var (
 		filesToDisk   = make(chan string)
 		filesFromDisk = make(chan string)
@@ -144,7 +186,7 @@ func (qr *Qr) swapout(files chan string) {
 					return // TODO
 				}
 				enc = gob.NewEncoder(fh)
-				t.Reset(timeout)
+				t.Reset(qr.timeout)
 			}
 			if err = enc.Encode(&e); err != nil {
 				fmt.Printf("Encode error: %v\n", err)
