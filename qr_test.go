@@ -82,11 +82,12 @@ func TestBig(t *testing.T) {
 		t.Skip("skipping test in short mode.")
 	}
 
-	d := setupDataDir()
+	var (
+		d          = setupDataDir()
+		eventCount = 10000
+		q          = qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
+	)
 
-	q := qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
-
-	eventCount := 10000
 	for i := 0; i < eventCount; i++ {
 		q.Enqueue(fmt.Sprintf("Event %d: %s", i, strings.Repeat("0xDEADBEEF", 300)))
 	}
@@ -96,27 +97,27 @@ func TestBig(t *testing.T) {
 			t.Fatalf("Want for %d: %#v, got %#v", i, want, got)
 		}
 	}
-
 	q.Close()
-	// Everything is processed. All files should be gone.
+
 	if got, want := fileCount(d), 0; got != want {
 		t.Fatalf("Wrong number of files: got %d, want %d", got, want)
 	}
 }
 
 func TestAsync(t *testing.T) {
+	// Random sleep readers and writers.
 	if testing.Short() {
 		t.Skip("skipping test in short mode.")
 	}
 
-	// Random sleep readers and writers.
-	d := setupDataDir()
-	q := qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
 	var (
+		d          = setupDataDir()
 		eventCount = 10000
 		payload    = strings.Repeat("0xDEADBEEF", 300)
+		q          = qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
 		wg         = sync.WaitGroup{}
 	)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -125,6 +126,7 @@ func TestAsync(t *testing.T) {
 			time.Sleep(time.Duration(rand.Intn(100)) * time.Microsecond)
 		}
 	}()
+
 	// Reader is a little slower.
 	wg.Add(1)
 	go func() {
@@ -136,10 +138,10 @@ func TestAsync(t *testing.T) {
 			time.Sleep(time.Duration(rand.Intn(150)) * time.Microsecond)
 		}
 	}()
+
 	wg.Wait()
 	q.Close()
 
-	// Everything is processed. All files should be gone.
 	if got, want := fileCount(d), 0; got != want {
 		t.Fatalf("Wrong number of files: got %d, want %d", got, want)
 	}
@@ -152,14 +154,13 @@ func TestMany(t *testing.T) {
 	}
 
 	var (
+		d          = setupDataDir()
 		eventCount = 1000000
 		clients    = 10
 		payload    = strings.Repeat("0xDEADBEEF", 30)
-		d          = setupDataDir()
+		q          = qr.New(d, "events", qr.OptionTimeout(100*time.Millisecond))
+		wg         = sync.WaitGroup{}
 	)
-
-	q := qr.New(d, "events", qr.OptionTimeout(100*time.Millisecond))
-	wg := sync.WaitGroup{}
 
 	for i := 0; i < clients; i++ {
 		wg.Add(1)
@@ -184,7 +185,7 @@ func TestMany(t *testing.T) {
 	wg.Wait()
 
 	q.Close()
-	// Everything is processed. All files should be gone.
+
 	if got, want := fileCount(d), 0; got != want {
 		t.Fatalf("Wrong number of files: got %d, want %d", got, want)
 	}
@@ -192,8 +193,11 @@ func TestMany(t *testing.T) {
 
 func TestReopen(t *testing.T) {
 	// Simple reopening.
-	d := setupDataDir()
-	q := qr.New(d, "events")
+	var (
+		d = setupDataDir()
+		q = qr.New(d, "events")
+	)
+
 	q.Enqueue("Message 1")
 	q.Enqueue("Message 2")
 	q.Close()
@@ -206,7 +210,7 @@ func TestReopen(t *testing.T) {
 	}
 	<-q.Dequeue()
 	q.Close()
-	// Everything is processed. All files should be gone.
+
 	if got, want := fileCount(d), 0; got != want {
 		t.Fatalf("Wrong number of files: got %d, want %d", got, want)
 	}
@@ -214,25 +218,33 @@ func TestReopen(t *testing.T) {
 
 func TestReadOnly(t *testing.T) {
 	// Only reading doesn't block the close.
-	d := setupDataDir()
-	q := qr.New(d, "i")
+	var (
+		d = setupDataDir()
+		q = qr.New(d, "i")
+	)
+
 	select {
 	case v := <-q.Dequeue():
 		t.Fatalf("Impossible read: %v", v)
 	default:
 	}
+
 	q.Close()
 }
 
 func TestStruct(t *testing.T) {
-	d := setupDataDir()
-	q := qr.New(d, "events")
+	var (
+		d = setupDataDir()
+		q = qr.New(d, "events")
+	)
 	defer q.Close()
+
 	type s struct {
 		X string
 		Y int
 	}
 	gob.Register(s{})
+
 	data := []s{
 		{"Event", 1},
 		{"alice", 2},
@@ -240,9 +252,6 @@ func TestStruct(t *testing.T) {
 	}
 	for _, d := range data {
 		q.Enqueue(d)
-	}
-	for i := 0; i < 20; i++ {
-		q.Enqueue(s{"dummy", i})
 	}
 	for _, want := range data {
 		if got := <-q.Dequeue(); want != got {
@@ -252,10 +261,12 @@ func TestStruct(t *testing.T) {
 }
 
 func TestTwoStructs(t *testing.T) {
-	d := setupDataDir()
-	q1 := qr.New(d, "s1")
+	var (
+		d  = setupDataDir()
+		q1 = qr.New(d, "s1")
+		q2 = qr.New(d, "s2")
+	)
 	defer q1.Close()
-	q2 := qr.New(d, "s2")
 	defer q2.Close()
 
 	type s1 struct {
@@ -287,10 +298,6 @@ func TestTwoStructs(t *testing.T) {
 	for _, d2 := range data2 {
 		q2.Enqueue(d2)
 	}
-	for i := 0; i < 20; i++ {
-		q1.Enqueue(s1{"dummy", i})
-		q2.Enqueue(s2{1.0, "one"})
-	}
 
 	for _, want := range data1 {
 		if got := <-q1.Dequeue(); want != got {
@@ -302,12 +309,20 @@ func TestTwoStructs(t *testing.T) {
 			t.Errorf("Want %#v, got %#v", want, got)
 		}
 	}
+
+	if got, want := fileCount(d), 0; got != want {
+		t.Fatalf("Wrong number of files: got %d, want %d", got, want)
+	}
 }
 
 // fileCount is a helper to count files in a directory.
 func fileCount(dir string) int {
-	fh, _ := os.Open(dir)
+	fh, err := os.Open(dir)
+	if err != nil {
+		panic(err)
+	}
 	defer fh.Close()
+
 	n, err := fh.Readdirnames(-1)
 	if err != nil {
 		panic(err)

@@ -141,7 +141,7 @@ func (qr *Qr) Close() {
 	close(qr.planb)
 
 	// Store the in-flight entries for next time.
-	filename := qr.batchFilename(0) // special filename
+	filename := qr.batchFilename(time.Time{}) // special filename
 	fh, err := os.Create(filename)
 	if err != nil {
 		qr.log.Printf("create err: %v", err)
@@ -188,7 +188,7 @@ func (qr *Qr) swapout(files chan<- string) {
 			}
 			if enc == nil {
 				// open file
-				filename = qr.batchFilename(time.Now().UnixNano())
+				filename = qr.batchFilename(time.Now().UTC())
 				fh, err = os.Create(filename)
 				if err != nil {
 					// TODO: sure we return?
@@ -271,8 +271,14 @@ func (qr *Qr) fs(in <-chan string, out chan<- string) {
 	}
 }
 
-func (qr *Qr) batchFilename(id int64) string {
-	return fmt.Sprintf("%s/%s-%020d%s", qr.dir, qr.prefix, id, fileExtension)
+func (qr *Qr) batchFilename(t time.Time) string {
+	format := "20060102T150405.999999999" // time.RFC3339Nano
+	return fmt.Sprintf("%s/%s-%s%s",
+		qr.dir,
+		qr.prefix,
+		t.Format(format),
+		fileExtension,
+	)
 }
 
 // findOld finds .qr files from a previous run.
