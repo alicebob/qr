@@ -18,16 +18,17 @@ package qr
 //
 //
 // Usage:
-// q := New("/mnt/queues/", "demo", OptionBuffer(100))
-// defer q.Close()
-// go func() {
-//     for e := range q.Dequeue() {
-//        fmt.Printf("We got: %v\n", e)
-//     }
-// }
-// // elsewhere:
-// q.Enqueue("aap")
-// q.Enqueue("noot")
+//    q := New("/mnt/queues/", "demo", OptionBuffer(100))
+//    defer q.Close()
+//    go func() {
+//        for e := range q.Dequeue() {
+//           fmt.Printf("We got: %v\n", e)
+//        }
+//    }()
+//
+//    // elsewhere:
+//    q.Enqueue("aap")
+//    q.Enqueue("noot")
 
 import (
 	"encoding/gob"
@@ -49,6 +50,7 @@ const (
 	fileExtension = ".qr"
 )
 
+// Qr is a disk-based queue.
 type Qr struct {
 	q          chan interface{} // the main channel.
 	planb      chan interface{} // to disk, used when q is full.
@@ -56,6 +58,7 @@ type Qr struct {
 	prefix     string
 	timeout    time.Duration
 	bufferSize int
+	log        Logger
 }
 
 // Option is an option to New(), which can change some settings.
@@ -77,6 +80,14 @@ func OptionBuffer(n int) Option {
 	}
 }
 
+// OptionLogger is an option for New(). Is sets the logger, the default is the
+// log module.
+func OptionLogger(l Logger) Option {
+	return func(qr *Qr) {
+		qr.log = l
+	}
+}
+
 // New starts a Queue which stores files in <dir>/<prefix>-.<timestamp>.qr
 func New(dir, prefix string, options ...Option) *Qr {
 	qr := Qr{
@@ -85,6 +96,7 @@ func New(dir, prefix string, options ...Option) *Qr {
 		prefix:     prefix,
 		timeout:    DefaultTimeout,
 		bufferSize: DefaultBuffer,
+		log:        StdLog{},
 	}
 	for _, cb := range options {
 		cb(&qr)
@@ -112,7 +124,6 @@ func (qr *Qr) Enqueue(e interface{}) {
 		return
 	default:
 	}
-	// fmt.Printf("full q\n")
 	qr.planb <- e
 }
 
@@ -129,12 +140,11 @@ func (qr *Qr) Close() {
 	// Closing planb triggers a cascade closing of all go-s and channels.
 	close(qr.planb)
 
-	// Store the in-flight ones for next time.
-	// TODO: could be there is nothing.
+	// Store the in-flight entries for next time.
 	filename := qr.batchFilename(0) // special filename
 	fh, err := os.Create(filename)
 	if err != nil {
-		fmt.Printf("create err: %v\n", err)
+		qr.log.Printf("create err: %v", err)
 		return
 	}
 	enc := gob.NewEncoder(fh)
@@ -142,24 +152,26 @@ func (qr *Qr) Close() {
 	for e := range qr.q {
 		count++
 		if err = enc.Encode(&e); err != nil {
-			fmt.Printf("Encode error: %v\n", err)
+			qr.log.Printf("Encode error: %v", err)
 		}
 	}
 	fh.Close()
 
 	if count == 0 {
-		// all this work, and there was nothing to queue...
+		// All this work, and there was nothing to queue...
 		os.Remove(filename)
 	}
 }
 
-func (qr *Qr) swapout(files chan string) {
-	defer fmt.Printf("swapout out\n")
+func (qr *Qr) swapout(files chan<- string) {
 	var (
 		enc      *gob.Encoder
 		filename string
 		fh       io.WriteCloser
-		t        = time.NewTimer(100 * time.Minute)
+		tc       <-chan time.Time
+		t        = time.NewTimer(0)
+		n        int
+		err      error
 	)
 	defer func() {
 		if enc != nil {
@@ -168,7 +180,6 @@ func (qr *Qr) swapout(files chan string) {
 		}
 		close(files)
 	}()
-	var err error
 	for {
 		select {
 		case e, ok := <-qr.planb:
@@ -178,37 +189,39 @@ func (qr *Qr) swapout(files chan string) {
 			if enc == nil {
 				// open file
 				filename = qr.batchFilename(time.Now().UnixNano())
-				fmt.Printf("swapout %s\n", filename)
 				fh, err = os.Create(filename)
 				if err != nil {
-					fmt.Printf("create err: %v\n", err)
-					panic("todo")
-					return // TODO
+					// TODO: sure we return?
+					qr.log.Printf("create err: %v\n", err)
+					return
 				}
 				enc = gob.NewEncoder(fh)
-				t.Reset(qr.timeout)
+				if n == 0 {
+					t.Reset(qr.timeout)
+					tc = t.C
+				}
 			}
 			if err = enc.Encode(&e); err != nil {
-				fmt.Printf("Encode error: %v\n", err)
+				qr.log.Printf("Encode error: %v\n", err)
 			}
-		case <-t.C:
+			n++
+		case <-tc:
 			// time to close our file.
-			// fmt.Printf("closing file %s...\n", filename)
 			fh.Close()
 			enc = nil
+			n = 0
+			tc = nil
 			files <- filename
 		}
 	}
 }
 
-func (qr *Qr) swapin(files chan string) {
-	defer fmt.Printf("swapin out\n")
+func (qr *Qr) swapin(files <-chan string) {
 	defer close(qr.q)
 	for filename := range files {
 		fh, err := os.Open(filename)
-		fmt.Printf("swapin %s\n", filename)
 		if err != nil {
-			fmt.Printf("open err: %v\n", err)
+			qr.log.Printf("open err: %v\n", err)
 			continue
 		}
 		os.Remove(filename)
@@ -217,28 +230,22 @@ func (qr *Qr) swapin(files chan string) {
 			var next interface{}
 			if err = dec.Decode(&next); err != nil {
 				if err != io.EOF {
-					fmt.Printf("decode err: %v\n", err)
-					// TODO
+					qr.log.Printf("decode err: %v\n", err)
 				}
 				fh.Close()
 				fh = nil
 				break
 			}
-			// fmt.Printf("swapin write: %v\n", next)
 			qr.q <- next
 		}
-		fmt.Printf("swapin done with %s\n", filename)
 	}
 }
 
-// fs keeps a list of all files on disk. swapout() will add filenames, and
-// swapin asks it for filenames. It returns when in is closed.
-func (qr *Qr) fs(in, out chan string) {
-	defer fmt.Printf("fs out\n")
+func (qr *Qr) fs(in <-chan string, out chan<- string) {
 	defer close(out)
 	var (
 		filenames []string
-		checkOut  chan string
+		checkOut  chan<- string
 		next      string
 	)
 	for {
@@ -275,17 +282,21 @@ func (qr *Qr) findOld() []string {
 		return nil
 	}
 	defer f.Close()
-	var existing []string
+
 	names, err := f.Readdirnames(-1)
 	if err != nil {
 		return nil
 	}
-	for _, name := range names {
-		if !strings.HasPrefix(name, qr.prefix+"-") || !strings.HasSuffix(name, fileExtension) {
+
+	var existing []string
+	for _, n := range names {
+		if !strings.HasPrefix(n, qr.prefix+"-") || !strings.HasSuffix(n, fileExtension) {
 			continue
 		}
-		existing = append(existing, filepath.Join(qr.dir, name))
+		existing = append(existing, filepath.Join(qr.dir, n))
 	}
+
 	sort.Strings(existing)
+
 	return existing
 }

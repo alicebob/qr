@@ -158,7 +158,7 @@ func TestMany(t *testing.T) {
 		d          = setupDataDir()
 	)
 
-	q := qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
+	q := qr.New(d, "events", qr.OptionTimeout(100*time.Millisecond))
 	wg := sync.WaitGroup{}
 
 	for i := 0; i < clients; i++ {
