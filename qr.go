@@ -121,14 +121,13 @@ func New(dir, prefix string, options ...Option) *Qr {
 func (qr *Qr) Enqueue(e interface{}) {
 	select {
 	case qr.q <- e:
-		return
 	default:
+		qr.planb <- e
 	}
-	qr.planb <- e
 }
 
-// Dequeue is the channel where elements come from. It'll be closed when we
-// shut down.
+// Dequeue is the channel where elements come out the queue. It'll be closed
+// on Close().
 func (qr *Qr) Dequeue() <-chan interface{} {
 	return qr.q
 }
@@ -156,9 +155,8 @@ func (qr *Qr) Close() {
 		}
 	}
 	fh.Close()
-
 	if count == 0 {
-		// All this work, and there was nothing to queue...
+		// there was nothing to queue
 		os.Remove(filename)
 	}
 }
@@ -170,7 +168,6 @@ func (qr *Qr) swapout(files chan<- string) {
 		fh       io.WriteCloser
 		tc       <-chan time.Time
 		t        = time.NewTimer(0)
-		n        int
 		err      error
 	)
 	defer func() {
@@ -187,7 +184,6 @@ func (qr *Qr) swapout(files chan<- string) {
 				return
 			}
 			if enc == nil {
-				// open file
 				filename = qr.batchFilename(time.Now().UTC())
 				fh, err = os.Create(filename)
 				if err != nil {
@@ -196,22 +192,17 @@ func (qr *Qr) swapout(files chan<- string) {
 					return
 				}
 				enc = gob.NewEncoder(fh)
-				if n == 0 {
-					t.Reset(qr.timeout)
-					tc = t.C
-				}
+				t.Reset(qr.timeout)
+				tc = t.C
 			}
 			if err = enc.Encode(&e); err != nil {
 				qr.log.Printf("Encode error: %v\n", err)
 			}
-			n++
 		case <-tc:
-			// time to close our file.
 			fh.Close()
-			enc = nil
-			n = 0
-			tc = nil
 			files <- filename
+			enc = nil
+			tc = nil
 		}
 	}
 }
@@ -272,7 +263,7 @@ func (qr *Qr) fs(in <-chan string, out chan<- string) {
 }
 
 func (qr *Qr) batchFilename(t time.Time) string {
-	format := "20060102T150405.999999999" // time.RFC3339Nano
+	format := "20060102T150405.999999999"
 	return fmt.Sprintf("%s/%s-%s%s",
 		qr.dir,
 		qr.prefix,
