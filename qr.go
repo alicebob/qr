@@ -34,6 +34,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -58,7 +59,7 @@ type Qr struct {
 	prefix     string
 	timeout    time.Duration
 	bufferSize int
-	log        Logger
+	log        func(string, ...interface{}) // Printf() style
 }
 
 // Option is an option to New(), which can change some settings.
@@ -80,9 +81,9 @@ func OptionBuffer(n int) Option {
 	}
 }
 
-// OptionLogger is an option for New(). Is sets the logger, the default is the
-// log module.
-func OptionLogger(l Logger) Option {
+// OptionLogger is an option for New(). Is sets the logger, the default is
+// log.Printf, but glog.Errorf would also work.
+func OptionLogger(l func(string, ...interface{})) Option {
 	return func(qr *Qr) {
 		qr.log = l
 	}
@@ -96,7 +97,7 @@ func New(dir, prefix string, options ...Option) *Qr {
 		prefix:     prefix,
 		timeout:    DefaultTimeout,
 		bufferSize: DefaultBuffer,
-		log:        StdLog{},
+		log:        log.Printf,
 	}
 	for _, cb := range options {
 		cb(&qr)
@@ -143,7 +144,7 @@ func (qr *Qr) Close() {
 	filename := qr.batchFilename(time.Time{}) // special filename
 	fh, err := os.Create(filename)
 	if err != nil {
-		qr.log.Printf("create err: %v", err)
+		qr.log("create err: %v", err)
 		return
 	}
 	enc := gob.NewEncoder(fh)
@@ -151,7 +152,7 @@ func (qr *Qr) Close() {
 	for e := range qr.q {
 		count++
 		if err = enc.Encode(&e); err != nil {
-			qr.log.Printf("Encode error: %v", err)
+			qr.log("Encode error: %v", err)
 		}
 	}
 	fh.Close()
@@ -188,7 +189,7 @@ func (qr *Qr) swapout(files chan<- string) {
 				fh, err = os.Create(filename)
 				if err != nil {
 					// TODO: sure we return?
-					qr.log.Printf("create err: %v\n", err)
+					qr.log("create err: %v\n", err)
 					return
 				}
 				enc = gob.NewEncoder(fh)
@@ -196,7 +197,7 @@ func (qr *Qr) swapout(files chan<- string) {
 				tc = t.C
 			}
 			if err = enc.Encode(&e); err != nil {
-				qr.log.Printf("Encode error: %v\n", err)
+				qr.log("Encode error: %v\n", err)
 			}
 		case <-tc:
 			fh.Close()
@@ -212,7 +213,7 @@ func (qr *Qr) swapin(files <-chan string) {
 	for filename := range files {
 		fh, err := os.Open(filename)
 		if err != nil {
-			qr.log.Printf("open err: %v\n", err)
+			qr.log("open err: %v\n", err)
 			continue
 		}
 		os.Remove(filename)
@@ -221,7 +222,7 @@ func (qr *Qr) swapin(files <-chan string) {
 			var next interface{}
 			if err = dec.Decode(&next); err != nil {
 				if err != io.EOF {
-					qr.log.Printf("decode err: %v\n", err)
+					qr.log("decode err: %v\n", err)
 				}
 				fh.Close()
 				fh = nil
