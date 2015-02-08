@@ -315,6 +315,32 @@ func TestTwoStructs(t *testing.T) {
 	}
 }
 
+func TestTest(t *testing.T) {
+	var (
+		d = setupDataDir()
+		q = qr.New(d, "xxx")
+	)
+	defer q.Close()
+
+	if err := q.Test("hello"); err != nil {
+		t.Fatal(err)
+	}
+
+	type r struct {
+		X string
+		Y int
+	}
+
+	if err := q.Test(r{"hello", 1}); err == nil {
+		t.Errorf("should have failed for unregistered struct")
+	}
+
+	gob.Register(r{})
+	if err := q.Test(r{"hello", 1}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // fileCount is a helper to count files in a directory.
 func fileCount(dir string) int {
 	fh, err := os.Open(dir)

@@ -6,10 +6,9 @@ package qr
 // When everything is fine elements flow over Qr.q. This is a simple channel
 // directly connecting the producer(s) and the consumer(s).
 // If that channel is full elements are written to the Qr.planb channel.
-// swapout() will write all elements from Qr.planb to disk. That file is closed
-// after `timeout`. At the same time swapin() will try to process old files: if
-// there is at least a single completed file, swapin() will open that file and
-// try to write the elements to Qr.q.
+// swapout() will write all elements from Qr.planb to disk. It makes a new file
+// every `timeout`. At the same time swapin() will deal with completed files.
+// swapin() will open the oldest file and write the elements to Qr.q.
 //
 //   ---> Enqueue()    ---------   .q  --------->     Dequeue() --->
 //             \                                           ^
@@ -20,6 +19,9 @@ package qr
 // Usage:
 //    q := New("/mnt/queues/", "demo", OptionBuffer(100))
 //    defer q.Close()
+// 	  if err := q.Test("your datatype"); err != nil {
+//        panic(err)
+// 	  }
 //    go func() {
 //        for e := range q.Dequeue() {
 //           fmt.Printf("We got: %v\n", e)
@@ -29,6 +31,10 @@ package qr
 //    // elsewhere:
 //    q.Enqueue("aap")
 //    q.Enqueue("noot")
+//
+//
+// Gob is used to serialize entries; custom types should be registered using
+// gob.Register().
 
 import (
 	"encoding/gob"
@@ -37,6 +43,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -162,6 +169,38 @@ func (qr *Qr) Close() {
 	}
 }
 
+// Test tests that the given sample item can be serialized to disk and
+// deserialized successfully. This verifies that disk access works, and that
+// the type can be fully serialized and deserialized.
+func (qr *Qr) Test(i interface{}) error {
+	filename := qr.testBatchFilename()
+
+	f, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("create err: %v", err)
+	}
+	defer os.Remove(filename)
+	defer f.Close()
+	enc := gob.NewEncoder(f)
+	if err := enc.Encode(&i); err != nil {
+		return err
+	}
+
+	if f, err = os.Open(filename); err != nil {
+		return fmt.Errorf("create err: %v", err)
+	}
+	defer f.Close()
+	dec := gob.NewDecoder(f)
+	var c interface{}
+	if err = dec.Decode(&c); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(i, c) {
+		return fmt.Errorf("deserialization error: have %#v, want %#v", c, i)
+	}
+	return nil
+}
+
 func (qr *Qr) swapout(files chan<- string) {
 	var (
 		enc      *gob.Encoder
@@ -273,6 +312,10 @@ func (qr *Qr) batchFilename(t time.Time) string {
 	)
 }
 
+func (qr *Qr) testBatchFilename() string {
+	return fmt.Sprintf("%s/%s-test%s", qr.dir, qr.prefix, fileExtension)
+}
+
 // findOld finds .qr files from a previous run.
 func (qr *Qr) findOld() []string {
 	f, err := os.Open(qr.dir)
@@ -288,7 +331,9 @@ func (qr *Qr) findOld() []string {
 
 	var existing []string
 	for _, n := range names {
-		if !strings.HasPrefix(n, qr.prefix+"-") || !strings.HasSuffix(n, fileExtension) {
+		if !strings.HasPrefix(n, qr.prefix+"-") ||
+			!strings.HasSuffix(n, fileExtension) ||
+			strings.HasSuffix(n, "-test"+fileExtension) {
 			continue
 		}
 		existing = append(existing, filepath.Join(qr.dir, n))
