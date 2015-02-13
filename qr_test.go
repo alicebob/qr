@@ -28,7 +28,10 @@ func setupDataDir() string {
 func TestBasic(t *testing.T) {
 	d := setupDataDir()
 
-	q := qr.New(d, "test")
+	q, err := qr.New(d, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer q.Close()
 	for i := 0; i < 1000; i++ {
 		q.Enqueue(i)
@@ -55,7 +58,10 @@ func TestBasic(t *testing.T) {
 func TestBlock(t *testing.T) {
 	// Read should block until there is something.
 	d := setupDataDir()
-	q := qr.New(d, "test")
+	q, err := qr.New(d, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer q.Close()
 
 	ready := make(chan struct{})
@@ -85,8 +91,11 @@ func TestBig(t *testing.T) {
 	var (
 		d          = setupDataDir()
 		eventCount = 10000
-		q          = qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
 	)
+	q, err := qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for i := 0; i < eventCount; i++ {
 		q.Enqueue(fmt.Sprintf("Event %d: %s", i, strings.Repeat("0xDEADBEEF", 300)))
@@ -114,9 +123,12 @@ func TestAsync(t *testing.T) {
 		d          = setupDataDir()
 		eventCount = 10000
 		payload    = strings.Repeat("0xDEADBEEF", 300)
-		q          = qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
 		wg         = sync.WaitGroup{}
 	)
+	q, err := qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	wg.Add(1)
 	go func() {
@@ -158,9 +170,12 @@ func TestMany(t *testing.T) {
 		eventCount = 1000000
 		clients    = 10
 		payload    = strings.Repeat("0xDEADBEEF", 30)
-		q          = qr.New(d, "events", qr.OptionTimeout(100*time.Millisecond))
 		wg         = sync.WaitGroup{}
 	)
+	q, err := qr.New(d, "events", qr.OptionTimeout(100*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for i := 0; i < clients; i++ {
 		wg.Add(1)
@@ -193,16 +208,20 @@ func TestMany(t *testing.T) {
 
 func TestReopen(t *testing.T) {
 	// Simple reopening.
-	var (
-		d = setupDataDir()
-		q = qr.New(d, "events")
-	)
+	d := setupDataDir()
+	q, err := qr.New(d, "events")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	q.Enqueue("Message 1")
 	q.Enqueue("Message 2")
 	q.Close()
 
-	q = qr.New(d, "events")
+	q, err = qr.New(d, "events")
+	if err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case <-q.Dequeue():
 	case <-time.After(10 * time.Millisecond):
@@ -218,10 +237,11 @@ func TestReopen(t *testing.T) {
 
 func TestReadOnly(t *testing.T) {
 	// Only reading doesn't block the close.
-	var (
-		d = setupDataDir()
-		q = qr.New(d, "i")
-	)
+	d := setupDataDir()
+	q, err := qr.New(d, "i")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case v := <-q.Dequeue():
@@ -233,10 +253,11 @@ func TestReadOnly(t *testing.T) {
 }
 
 func TestStruct(t *testing.T) {
-	var (
-		d = setupDataDir()
-		q = qr.New(d, "events")
-	)
+	d := setupDataDir()
+	q, err := qr.New(d, "events")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer q.Close()
 
 	type s struct {
@@ -261,11 +282,15 @@ func TestStruct(t *testing.T) {
 }
 
 func TestTwoStructs(t *testing.T) {
-	var (
-		d  = setupDataDir()
-		q1 = qr.New(d, "s1")
-		q2 = qr.New(d, "s2")
-	)
+	d := setupDataDir()
+	q1, err := qr.New(d, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q2, err := qr.New(d, "s2")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer q1.Close()
 	defer q2.Close()
 
@@ -316,28 +341,41 @@ func TestTwoStructs(t *testing.T) {
 }
 
 func TestTest(t *testing.T) {
-	var (
-		d = setupDataDir()
-		q = qr.New(d, "xxx")
-	)
-	defer q.Close()
-
-	if err := q.Test("hello"); err != nil {
+	d := setupDataDir()
+	q, err := qr.New(d, "xxx", qr.OptionTest("hello"))
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer q.Close()
 
 	type r struct {
 		X string
 		Y int
 	}
 
-	if err := q.Test(r{"hello", 1}); err == nil {
+	if _, err := qr.New(d, "xxx", qr.OptionTest(r{"hello", 1})); err == nil {
 		t.Errorf("should have failed for unregistered struct")
 	}
 
 	gob.Register(r{})
-	if err := q.Test(r{"hello", 1}); err != nil {
+	if _, err := qr.New(d, "xxx", qr.OptionTest(r{"hello", 1})); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInvalidPrefix(t *testing.T) {
+	// Need a non-nil prefix.
+	d := setupDataDir()
+	for prefix, valid := range map[string]bool{
+		"":        false,
+		"foobar":  true,
+		"foo/bar": false,
+		"foo-bar": false,
+	} {
+		_, err := qr.New(d, prefix)
+		if have, want := (err == nil), valid; have != want{
+			t.Fatalf("prefix: %q, have: %t, want: %t", prefix, have, want)
+		}
 	}
 }
 

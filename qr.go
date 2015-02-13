@@ -38,6 +38,7 @@ package qr
 
 import (
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -58,7 +59,12 @@ const (
 	fileExtension = ".qr"
 )
 
-// Qr is a disk-based queue.
+var (
+	// ErrInvalidPrefix is potentially returned by New.
+	ErrInvalidPrefix = errors.New("invalid prefix")
+)
+
+// Qr is a disk-based queue. Create one with New().
 type Qr struct {
 	q          chan interface{} // the main channel.
 	planb      chan interface{} // to disk, used when q is full.
@@ -70,34 +76,52 @@ type Qr struct {
 }
 
 // Option is an option to New(), which can change some settings.
-type Option func(qr *Qr)
+type Option func(qr *Qr) error
 
 // OptionTimeout is an option for New(). It specifies the time after which a queue
 // file is closed. Smaller means more files.
 func OptionTimeout(t time.Duration) Option {
-	return func(qr *Qr) {
+	return func(qr *Qr) error {
 		qr.timeout = t
+		return nil
 	}
 }
 
 // OptionBuffer is an option for New(). It specifies the in-memory size of the
 // queue. Smaller means the disk will be used sooner, larger means more memory.
 func OptionBuffer(n int) Option {
-	return func(qr *Qr) {
+	return func(qr *Qr) error {
 		qr.bufferSize = n
+		return nil
 	}
 }
 
 // OptionLogger is an option for New(). Is sets the logger, the default is
 // log.Printf, but glog.Errorf would also work.
 func OptionLogger(l func(string, ...interface{})) Option {
-	return func(qr *Qr) {
+	return func(qr *Qr) error {
 		qr.logf = l
+		return nil
+	}
+}
+
+// OptionTest is an option for New(). It tests that the given sample item can
+// be serialized to disk and deserialized successfully. This verifies that disk
+// access works, and that the type can be fully serialized and deserialized
+// with gob. The option can be repeated.
+func OptionTest(t interface{}) Option {
+	return func(qr *Qr) error {
+		return qr.test(t)
 	}
 }
 
 // New starts a Queue which stores files in <dir>/<prefix>-.<timestamp>.qr
-func New(dir, prefix string, options ...Option) *Qr {
+// 'prefix' must be a simple ASCII string.
+func New(dir, prefix string, options ...Option) (*Qr, error) {
+	if len(prefix) == 0 || strings.ContainsAny(prefix, ":-/") {
+		return nil, ErrInvalidPrefix
+	}
+
 	qr := Qr{
 		planb:      make(chan interface{}),
 		dir:        dir,
@@ -107,8 +131,11 @@ func New(dir, prefix string, options ...Option) *Qr {
 		logf:       log.Printf,
 	}
 	for _, cb := range options {
-		cb(&qr)
+		if err := cb(&qr); err != nil {
+			return nil, err
+		}
 	}
+
 	qr.q = make(chan interface{}, qr.bufferSize)
 
 	var (
@@ -121,7 +148,7 @@ func New(dir, prefix string, options ...Option) *Qr {
 	for _, f := range qr.findOld() {
 		filesFromDisk <- f
 	}
-	return &qr
+	return &qr, nil
 }
 
 // Enqueue adds something in the queue. This never blocks, and is safe to be
@@ -169,10 +196,10 @@ func (qr *Qr) Close() {
 	}
 }
 
-// Test tests that the given sample item can be serialized to disk and
+// test tests that the given sample item can be serialized to disk and
 // deserialized successfully. This verifies that disk access works, and that
 // the type can be fully serialized and deserialized.
-func (qr *Qr) Test(i interface{}) error {
+func (qr *Qr) test(i interface{}) error {
 	filename := qr.testBatchFilename()
 
 	f, err := os.Create(filename)
