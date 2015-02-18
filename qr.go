@@ -10,10 +10,14 @@ package qr
 // every `timeout`. At the same time swapin() will deal with completed files.
 // swapin() will open the oldest file and write the elements to Qr.q.
 //
-//   ---> Enqueue()    ---------   .q  --------->     Dequeue() --->
-//             \                                           ^
-//            .planb                                     .q
-//               \--> swapout() --> fs() --> swapin() --/
+//   ---> Enqueue()   ------   .q   ----->    merge() -> .out -> Dequeue() --->
+//            \                                 ^
+//          .planb                         .confluence
+//             \                               /
+//              \--> swapout()     swapin() --/
+//                      \             ^
+//                       \--> fs() --/
+
 //
 //
 // Usage:
@@ -68,6 +72,8 @@ var (
 type Qr struct {
 	q          chan interface{} // the main channel.
 	planb      chan interface{} // to disk, used when q is full.
+	confluence chan interface{} // from disk to merge()
+	out        chan interface{}
 	dir        string
 	prefix     string
 	timeout    time.Duration
@@ -124,6 +130,8 @@ func New(dir, prefix string, options ...Option) (*Qr, error) {
 
 	qr := Qr{
 		planb:      make(chan interface{}),
+		confluence: make(chan interface{}),
+		out:        make(chan interface{}),
 		dir:        dir,
 		prefix:     prefix,
 		timeout:    DefaultTimeout,
@@ -142,6 +150,7 @@ func New(dir, prefix string, options ...Option) (*Qr, error) {
 		filesToDisk   = make(chan string)
 		filesFromDisk = make(chan string)
 	)
+	go qr.merge()
 	go qr.swapout(filesToDisk)
 	go qr.fs(filesToDisk, filesFromDisk)
 	go qr.swapin(filesFromDisk)
@@ -164,13 +173,14 @@ func (qr *Qr) Enqueue(e interface{}) {
 // Dequeue is the channel where elements come out the queue. It'll be closed
 // on Close().
 func (qr *Qr) Dequeue() <-chan interface{} {
-	return qr.q
+	return qr.out
 }
 
 // Close shuts down all Go routines and closes the Dequeue() channel. It'll
 // write all in-flight entries to disk. Calling Enqueue() after Close will
 // panic.
 func (qr *Qr) Close() {
+	close(qr.q)
 	// Closing planb triggers a cascade closing of all go-s and channels.
 	close(qr.planb)
 
@@ -183,7 +193,7 @@ func (qr *Qr) Close() {
 	}
 	enc := gob.NewEncoder(fh)
 	count := 0
-	for e := range qr.q {
+	for e := range qr.out {
 		count++
 		if err = enc.Encode(&e); err != nil {
 			qr.logf("encode error: %v", err)
@@ -226,6 +236,46 @@ func (qr *Qr) test(i interface{}) error {
 		return fmt.Errorf("deserialization error: have %#v, want %#v", c, i)
 	}
 	return nil
+}
+
+func (qr *Qr) merge() {
+	defer func() {
+		for e := range qr.q {
+			qr.out <- e
+		}
+		for e := range qr.confluence {
+			qr.out <- e
+		}
+		close(qr.out)
+	}()
+
+	// read q and planb, and write them to out
+	for {
+		// prefer to read from Q
+		select {
+		case e, ok := <-qr.q:
+			if !ok {
+				return
+			}
+			qr.out <- e
+			continue
+		default:
+		}
+
+		// otherwise try both
+		select {
+		case e, ok := <-qr.q:
+			if !ok {
+				return
+			}
+			qr.out <- e
+		case e, ok := <-qr.confluence:
+			if !ok {
+				return
+			}
+			qr.out <- e
+		}
+	}
 }
 
 func (qr *Qr) swapout(files chan<- string) {
@@ -275,7 +325,7 @@ func (qr *Qr) swapout(files chan<- string) {
 }
 
 func (qr *Qr) swapin(files <-chan string) {
-	defer close(qr.q)
+	defer close(qr.confluence)
 	for filename := range files {
 		fh, err := os.Open(filename)
 		if err != nil {
@@ -294,7 +344,7 @@ func (qr *Qr) swapin(files <-chan string) {
 				fh = nil
 				break
 			}
-			qr.q <- next
+			qr.confluence <- next
 		}
 	}
 }

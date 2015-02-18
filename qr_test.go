@@ -91,6 +91,7 @@ func TestBig(t *testing.T) {
 	var (
 		d          = setupDataDir()
 		eventCount = 10000
+		payload    = strings.Repeat("0xDEADBEEF", 300)
 	)
 	q, err := qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
 	if err != nil {
@@ -98,18 +99,17 @@ func TestBig(t *testing.T) {
 	}
 
 	for i := 0; i < eventCount; i++ {
-		q.Enqueue(fmt.Sprintf("Event %d: %s", i, strings.Repeat("0xDEADBEEF", 300)))
+		q.Enqueue(payload)
 	}
 	for i := 0; i < eventCount; i++ {
-		want := fmt.Sprintf("Event %d: %s", i, strings.Repeat("0xDEADBEEF", 300))
-		if got := <-q.Dequeue(); want != got {
-			t.Fatalf("Want for %d: %#v, got %#v", i, want, got)
+		if have, want := <-q.Dequeue(), payload; have != want {
+			t.Fatalf("Want for %d: have: %#v, want %#v", i, have, want)
 		}
 	}
 	q.Close()
 
-	if got, want := fileCount(d), 0; got != want {
-		t.Fatalf("Wrong number of files: got %d, want %d", got, want)
+	if have, want := fileCount(d), 0; have != want {
+		t.Fatalf("Wrong number of files: have %d, have %d", have, want)
 	}
 }
 
@@ -373,7 +373,7 @@ func TestInvalidPrefix(t *testing.T) {
 		"foo-bar": false,
 	} {
 		_, err := qr.New(d, prefix)
-		if have, want := (err == nil), valid; have != want{
+		if have, want := (err == nil), valid; have != want {
 			t.Fatalf("prefix: %q, have: %t, want: %t", prefix, have, want)
 		}
 	}
