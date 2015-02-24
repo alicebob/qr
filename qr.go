@@ -188,7 +188,7 @@ func (qr *Qr) Close() {
 	filename := qr.batchFilename(time.Time{}) // special filename
 	fh, err := os.Create(filename)
 	if err != nil {
-		qr.logf("create err: %v", err)
+		qr.logf("QR create err: %v", err)
 		return
 	}
 	enc := gob.NewEncoder(fh)
@@ -196,7 +196,7 @@ func (qr *Qr) Close() {
 	for e := range qr.out {
 		count++
 		if err = enc.Encode(&e); err != nil {
-			qr.logf("encode error: %v", err)
+			qr.logf("QR encode err: %v", err)
 		}
 	}
 	fh.Close()
@@ -305,7 +305,7 @@ func (qr *Qr) swapout(files chan<- string) {
 				fh, err = os.Create(filename)
 				if err != nil {
 					// TODO: sure we return?
-					qr.logf("create err: %v\n", err)
+					qr.logf("QR create err: %v\n", err)
 					return
 				}
 				enc = gob.NewEncoder(fh)
@@ -313,7 +313,7 @@ func (qr *Qr) swapout(files chan<- string) {
 				tc = t.C
 			}
 			if err = enc.Encode(&e); err != nil {
-				qr.logf("encode error: %v\n", err)
+				qr.logf("QR encode err: %v\n", err)
 			}
 		case <-tc:
 			fh.Close()
@@ -329,7 +329,7 @@ func (qr *Qr) swapin(files <-chan string) {
 	for filename := range files {
 		fh, err := os.Open(filename)
 		if err != nil {
-			qr.logf("open err: %v\n", err)
+			qr.logf("QR open err: %v\n", err)
 			continue
 		}
 		os.Remove(filename)
@@ -338,7 +338,7 @@ func (qr *Qr) swapin(files <-chan string) {
 			var next interface{}
 			if err = dec.Decode(&next); err != nil {
 				if err != io.EOF {
-					qr.logf("decode err: %v\n", err)
+					qr.logf("QR decode err: %v\n", err)
 				}
 				fh.Close()
 				fh = nil
