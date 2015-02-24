@@ -380,7 +380,7 @@ func (qr *Qr) fs(in <-chan string, out chan<- string) {
 }
 
 func (qr *Qr) batchFilename(n int64) string {
-	return fmt.Sprintf("%s/%s-%d%s",
+	return fmt.Sprintf("%s/%s-%020d%s",
 		qr.dir,
 		qr.prefix,
         n,
