@@ -235,6 +235,43 @@ func TestReopen(t *testing.T) {
 	}
 }
 
+func TestReopenBig(t *testing.T) {
+	// Queue a lot of elements.
+	if testing.Short() {
+		t.Skip("skipping test in short mode.")
+	}
+
+	var (
+		d          = setupDataDir()
+		eventCount = 10000
+		payload    = strings.Repeat("0xDEADBEEF", 300)
+	)
+	q, err := qr.New(d, "events", qr.OptionTimeout(10*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < eventCount; i++ {
+		q.Enqueue(payload)
+	}
+	q.Close()
+
+	q, err = qr.New(d, "events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < eventCount; i++ {
+		if have, want := <-q.Dequeue(), payload; have != want {
+			t.Fatalf("Want for %d: have: %#v, want %#v", i, have, want)
+		}
+	}
+	q.Close()
+
+	if have, want := fileCount(d), 0; have != want {
+		t.Fatalf("Wrong number of files: have %d, have %d", have, want)
+	}
+}
+
 func TestReadOnly(t *testing.T) {
 	// Only reading doesn't block the close.
 	d := setupDataDir()

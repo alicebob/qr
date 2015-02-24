@@ -155,7 +155,7 @@ func New(dir, prefix string, options ...Option) (*Qr, error) {
 	go qr.fs(filesToDisk, filesFromDisk)
 	go qr.swapin(filesFromDisk)
 	for _, f := range qr.findOld() {
-		filesFromDisk <- f
+		filesToDisk <- f
 	}
 	return &qr, nil
 }
