@@ -383,7 +383,7 @@ func (qr *Qr) batchFilename(n int64) string {
 	return fmt.Sprintf("%s/%s-%020d%s",
 		qr.dir,
 		qr.prefix,
-        n,
+		n,
 		fileExtension,
 	)
 }
