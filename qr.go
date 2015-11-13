@@ -280,18 +280,21 @@ func (qr *Qr) merge() {
 
 func (qr *Qr) swapout(files chan<- string) {
 	var (
-		enc      *gob.Encoder
-		filename string
-		fh       io.WriteCloser
-		tc       <-chan time.Time
-		t        = time.NewTimer(0)
-		err      error
+		enc       *gob.Encoder
+		filename  string
+		fh        io.WriteCloser
+		err       error
+		t         = time.NewTimer(0)
+		closeFile = func() {
+			if enc != nil {
+				fh.Close()
+				files <- filename
+				enc = nil
+			}
+		}
 	)
 	defer func() {
-		if enc != nil {
-			fh.Close()
-			files <- filename
-		}
+		closeFile()
 		close(files)
 		t.Stop()
 	}()
@@ -311,16 +314,12 @@ func (qr *Qr) swapout(files chan<- string) {
 				}
 				enc = gob.NewEncoder(fh)
 				t.Reset(qr.timeout)
-				tc = t.C
 			}
 			if err = enc.Encode(&e); err != nil {
 				qr.logf("QR encode err: %v", err)
 			}
-		case <-tc:
-			fh.Close()
-			files <- filename
-			enc = nil
-			tc = nil
+		case <-t.C:
+			closeFile()
 		}
 	}
 }
