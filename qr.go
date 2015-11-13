@@ -278,18 +278,21 @@ func (qr *Qr) merge() {
 	}
 }
 
+type fileEncoder struct {
+	enc      *gob.Encoder
+	filename string
+	fh       io.WriteCloser
+}
+
 func (qr *Qr) swapout(files chan<- string) {
 	var (
-		enc       *gob.Encoder
-		filename  string
-		fh        io.WriteCloser
-		err       error
+		f         *fileEncoder
 		t         = time.NewTimer(0)
 		closeFile = func() {
-			if enc != nil {
-				fh.Close()
-				files <- filename
-				enc = nil
+			if f != nil {
+				f.fh.Close()
+				files <- f.filename
+				f = nil
 			}
 		}
 	)
@@ -304,18 +307,21 @@ func (qr *Qr) swapout(files chan<- string) {
 			if !ok {
 				return
 			}
-			if enc == nil {
-				filename = qr.batchFilename(time.Now().UnixNano())
-				fh, err = os.Create(filename)
+			if f == nil {
+				filename := qr.batchFilename(time.Now().UnixNano())
+				fh, err := os.Create(filename)
 				if err != nil {
-					// TODO: sure we return?
 					qr.logf("QR create err: %v", err)
 					return
 				}
-				enc = gob.NewEncoder(fh)
+				f = &fileEncoder{
+					enc:      gob.NewEncoder(fh),
+					filename: filename,
+					fh:       fh,
+				}
 				t.Reset(qr.timeout)
 			}
-			if err = enc.Encode(&e); err != nil {
+			if err := f.enc.Encode(&e); err != nil {
 				qr.logf("QR encode err: %v", err)
 			}
 		case <-t.C:
