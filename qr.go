@@ -293,6 +293,7 @@ func (qr *Qr) swapout(files chan<- string) {
 			files <- filename
 		}
 		close(files)
+		t.Stop()
 	}()
 	for {
 		select {
