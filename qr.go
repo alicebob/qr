@@ -18,24 +18,6 @@
 //                       \--> fs() --/
 //
 //
-//
-// Usage:
-//    q := New("/mnt/queues/", "demo", OptionBuffer(100))
-//    defer q.Close()
-//    if err := q.Test("your datatype"); err != nil {
-//        panic(err)
-//    }
-//    go func() {
-//        for e := range q.Dequeue() {
-//           fmt.Printf("We got: %v\n", e)
-//        }
-//    }()
-//
-//    // elsewhere:
-//    q.Enqueue("aap")
-//    q.Enqueue("noot")
-//
-//
 // Gob is used to serialize entries; custom types should be registered using
 // gob.Register().
 //
