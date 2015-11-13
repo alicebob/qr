@@ -342,7 +342,6 @@ func (qr *Qr) swapin(files <-chan string) {
 					qr.logf("QR decode err: %v", err)
 				}
 				fh.Close()
-				fh = nil
 				break
 			}
 			qr.confluence <- next
