@@ -1,10 +1,9 @@
-package qr
-
+//
 // In process queue with disk based overflow. Element order is not strictly
 // preserved.
 //
 // When everything is fine elements flow over Qr.q. This is a simple channel
-// directly connecting the producer(s) and the consumer(s).
+// connecting the producer(s) and the consumer(s).
 // If that channel is full elements are written to the Qr.planb channel.
 // swapout() will write all elements from Qr.planb to disk. It makes a new file
 // every `timeout`. At the same time swapin() will deal with completed files.
@@ -17,15 +16,15 @@ package qr
 //              \--> swapout()     swapin() --/
 //                      \             ^
 //                       \--> fs() --/
-
+//
 //
 //
 // Usage:
 //    q := New("/mnt/queues/", "demo", OptionBuffer(100))
 //    defer q.Close()
-// 	  if err := q.Test("your datatype"); err != nil {
+//    if err := q.Test("your datatype"); err != nil {
 //        panic(err)
-// 	  }
+//    }
 //    go func() {
 //        for e := range q.Dequeue() {
 //           fmt.Printf("We got: %v\n", e)
@@ -39,6 +38,9 @@ package qr
 //
 // Gob is used to serialize entries; custom types should be registered using
 // gob.Register().
+//
+//
+package qr
 
 import (
 	"encoding/gob"
