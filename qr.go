@@ -301,11 +301,11 @@ func (qr *Qr) swapout(files chan<- string) {
 				return
 			}
 			if enc == nil {
-				filename = qr.batchFilename(time.Now().UTC().UnixNano())
+				filename = qr.batchFilename(time.Now().UnixNano())
 				fh, err = os.Create(filename)
 				if err != nil {
 					// TODO: sure we return?
-					qr.logf("QR create err: %v\n", err)
+					qr.logf("QR create err: %v", err)
 					return
 				}
 				enc = gob.NewEncoder(fh)
@@ -313,7 +313,7 @@ func (qr *Qr) swapout(files chan<- string) {
 				tc = t.C
 			}
 			if err = enc.Encode(&e); err != nil {
-				qr.logf("QR encode err: %v\n", err)
+				qr.logf("QR encode err: %v", err)
 			}
 		case <-tc:
 			fh.Close()
@@ -329,7 +329,7 @@ func (qr *Qr) swapin(files <-chan string) {
 	for filename := range files {
 		fh, err := os.Open(filename)
 		if err != nil {
-			qr.logf("QR open err: %v\n", err)
+			qr.logf("QR open err: %v", err)
 			continue
 		}
 		os.Remove(filename)
@@ -338,7 +338,7 @@ func (qr *Qr) swapin(files <-chan string) {
 			var next interface{}
 			if err = dec.Decode(&next); err != nil {
 				if err != io.EOF {
-					qr.logf("QR decode err: %v\n", err)
+					qr.logf("QR decode err: %v", err)
 				}
 				fh.Close()
 				fh = nil
