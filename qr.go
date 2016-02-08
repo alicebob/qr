@@ -1,6 +1,5 @@
-//
-// In process queue with disk based overflow. Element order is not strictly
-// preserved.
+// Package qr is an in process queue with disk based overflow. Element order is
+// not strictly preserved.
 //
 // When everything is fine elements flow over Qr.q. This is a simple channel
 // connecting the producer(s) and the consumer(s).
@@ -158,6 +157,12 @@ func (qr *Qr) Enqueue(e interface{}) {
 // on Close().
 func (qr *Qr) Dequeue() <-chan interface{} {
 	return qr.out
+}
+
+// FileCount gives the number of files on disk. Useful to graph to get an idea
+// about disk usage.
+func (qr *Qr) FileCount() int {
+	return len(qr.findOld())
 }
 
 // Close shuts down all Go routines and closes the Dequeue() channel. It'll
