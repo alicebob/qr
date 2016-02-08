@@ -34,6 +34,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -62,6 +63,7 @@ type Qr struct {
 	timeout    time.Duration
 	bufferSize int
 	logf       func(string, ...interface{}) // Printf() style
+	fileCount  int64                        // via atomic
 }
 
 // Option is an option to New(), which can change some settings.
@@ -162,7 +164,7 @@ func (qr *Qr) Dequeue() <-chan interface{} {
 // FileCount gives the number of files on disk. Useful to graph to get an idea
 // about disk usage.
 func (qr *Qr) FileCount() int {
-	return len(qr.findOld())
+	return int(atomic.LoadInt64(&qr.fileCount))
 }
 
 // Close shuts down all Go routines and closes the Dequeue() channel. It'll
@@ -365,6 +367,7 @@ func (qr *Qr) fs(in <-chan string, out chan<- string) {
 				checkOut = nil
 			}
 		}
+		atomic.StoreInt64(&qr.fileCount, int64(len(filenames)))
 	}
 }
 
