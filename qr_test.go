@@ -101,10 +101,16 @@ func TestBig(t *testing.T) {
 	for i := 0; i < eventCount; i++ {
 		q.Enqueue(payload)
 	}
+	if have, want := q.FileCount(), 1; have != want {
+		t.Errorf("have %d, want %d", have, want)
+	}
 	for i := 0; i < eventCount; i++ {
 		if have, want := <-q.Dequeue(), payload; have != want {
 			t.Fatalf("Want for %d: have: %#v, want %#v", i, have, want)
 		}
+	}
+	if have, want := q.FileCount(), 0; have != want {
+		t.Errorf("have %d, want %d", have, want)
 	}
 	q.Close()
 
